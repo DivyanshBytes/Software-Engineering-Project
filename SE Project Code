@@ -1,0 +1,67 @@
+#!/bin/bash
+
+LOG_FILE="/var/log/syslog"
+RECIPIENT_EMAIL="sahilimamkhan098@gmail.com"
+KEYWORDS="CRITICAL|ERROR"
+SCRIPT_LOG="monitor_script.log"
+ALERT_LOG="alerts.log"
+EMAIL_INTERVAL=300
+LOCKFILE="/tmp/log_monitor.lock"
+
+log_message() {
+  local level="$1"
+  local message="$2"
+  echo "$(date '+%Y-%m-%d %H:%M:%S') [$level] - $message" | tee -a "$SCRIPT_LOG"
+}
+
+check_dependencies() {
+  for cmd in mail tail grep awk; do
+    if ! command -v $cmd &> /dev/null; then
+      log_message "ERROR" "Dependency '$cmd' not found. Please install it."
+      exit 1
+    fi
+  done
+  log_message "INFO" "All dependencies are available."
+}
+
+send_email_alert() {
+  local message_body="$1"
+  local recipient="$2"
+  local subject="Log Monitor Alert!"
+  local last_email_time=$(cat /tmp/last_email_time 2>/dev/null || echo 0)
+  local current_time=$(date +%s)
+  
+  if [[ -n "$message_body" ]] && (( current_time - last_email_time > EMAIL_INTERVAL )); then
+    echo "$message_body" | mail -s "$subject" "$recipient"
+    if [ $? -eq 0 ]; then
+      log_message "INFO" "Alert email sent to $recipient."
+      echo $current_time > /tmp/last_email_time
+    else
+      log_message "ERROR" "Failed to send email alert to $recipient."
+    fi
+  else
+    log_message "INFO" "Skipping email alert to prevent spam."
+  fi
+}
+
+monitor_logs() {
+  tail -F "$LOG_FILE" | while read line; do
+    if echo "$line" | grep -E "$KEYWORDS" &> /dev/null; then
+      log_message "ALERT" "Detected critical log entry: $line"
+      echo "$line" >> "$ALERT_LOG"
+      alert_message="Alert from Log Monitor:\n\n$line"
+      send_email_alert "$alert_message" "$RECIPIENT_EMAIL"
+    fi
+  done
+}
+
+log_message "INFO" "Log monitor script started."
+check_dependencies
+
+exec 200>$LOCKFILE
+flock -n 200 || { log_message "ERROR" "Script already running"; exit 1; }
+
+monitor_logs &
+
+log_message "INFO" "Log monitor script is running in real-time monitoring mode."
+wait
